@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>OmniDev Hub</title>
+  <link rel="manifest" href="/manifest.json">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      padding-top: env(safe-area-inset-top, 20px);
+      padding-bottom: env(safe-area-inset-bottom, 20px);
+      background-color: #0d1117;
+    }
+    .glass {
+      background: rgba(22, 27, 34, 0.85);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+    .orb-pulse {
+      animation: pulse-ring 2s cubic-bezier(0.455, 0.03, 0.515, 0.955) infinite;
+    }
+    @keyframes pulse-ring {
+      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7); }
+      70% { transform: scale(1.05); box-shadow: 0 0 0 20px rgba(59, 130, 246, 0); }
+      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+    }
+  </style>
+</head>
+<body class="text-gray-100 font-sans min-h-screen flex flex-col justify-between select-none">
+
+  <!-- Top Navigation & Fleet Status Header -->
+  <header class="glass sticky top-0 z-50 border-b border-gray-800 px-4 py-3">
+    <div class="flex items-center justify-between">
+      <div class="flex items-center space-x-2">
+        <span class="text-xl">⚡</span>
+        <div>
+          <h1 class="font-bold text-sm leading-tight tracking-wide">OmniDev Fleet</h1>
+          <div class="flex items-center space-x-1.5 text-xs text-gray-400">
+            <span id="fleet-status-dot" class="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse"></span>
+            <span id="fleet-host-name">Connecting...</span>
+          </div>
+        </div>
+      </div>
+      <!-- Telemetry Pills -->
+      <div class="flex items-center space-x-2">
+        <span id="fleet-battery-pill" class="text-xs bg-gray-800 border border-gray-700 rounded-full px-2.5 py-1 text-emerald-400">
+          🔋 --%
+        </span>
+        <span id="fleet-privacy-badge" class="text-xs bg-indigo-950 border border-indigo-700 rounded-full px-2.5 py-1 text-indigo-300 font-medium">
+          🔒 Strict
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content Container -->
+  <main class="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+
+    <!-- Active Hardware & Keep-Awake Bar -->
+    <div class="glass rounded-2xl p-3 border border-gray-800 text-xs flex justify-between items-center">
+      <div>
+        <span class="text-gray-400">Host Engine:</span>
+        <span id="hw-tier" class="font-semibold text-gray-200 ml-1">Detecting...</span>
+      </div>
+      <div>
+        <span class="text-gray-400">Keep-Awake:</span>
+        <span id="keepawake-status" class="text-emerald-400 font-medium ml-1">Active Lease</span>
+      </div>
+    </div>
+
+    <!-- Repository Allowlist Selector -->
+    <div>
+      <label class="text-xs text-gray-400 font-medium uppercase tracking-wider block mb-1.5">Target Workspace Repository</label>
+      <select id="repo-select" class="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500">
+        <option value="">Loading allowed repositories...</option>
+      </select>
+    </div>
+
+    <!-- Target IDE Selector Chips -->
+    <div>
+      <label class="text-xs text-gray-400 font-medium uppercase tracking-wider block mb-2">Target Dispatch Engine</label>
+      <div class="grid grid-cols-2 gap-2 text-xs">
+        <button onclick="setEngine('auto')" id="chip-auto" class="engine-chip py-2 px-3 rounded-xl border border-blue-500 bg-blue-950/60 text-blue-300 font-medium flex items-center justify-between">
+          <span>⚡ Smart Compiler</span>
+          <span>✓</span>
+        </button>
+        <button onclick="setEngine('cursor')" id="chip-cursor" class="engine-chip py-2 px-3 rounded-xl border border-gray-800 bg-gray-900/60 text-gray-400 font-medium flex items-center justify-between">
+          <span>Cursor CLI</span>
+        </button>
+        <button onclick="setEngine('antigravity')" id="chip-antigravity" class="engine-chip py-2 px-3 rounded-xl border border-gray-800 bg-gray-900/60 text-gray-400 font-medium flex items-center justify-between">
+          <span>Anti-Gravity</span>
+        </button>
+        <button onclick="setEngine('opencode')" id="chip-opencode" class="engine-chip py-2 px-3 rounded-xl border border-gray-800 bg-gray-900/60 text-gray-400 font-medium flex items-center justify-between">
+          <span>OpenCode (Free)</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Active Task Pipeline Stepper -->
+    <div id="pipeline-card" class="glass rounded-2xl p-4 border border-gray-800 space-y-2 hidden">
+      <div class="flex justify-between items-center">
+        <h3 class="text-xs font-semibold uppercase tracking-wider text-gray-400">Active Task Pipeline</h3>
+        <span id="active-task-id" class="text-xs text-blue-400 font-mono"></span>
+      </div>
+      <div id="pipeline-stepper" class="space-y-1.5 text-xs">
+        <!-- Injected dynamically -->
+      </div>
+    </div>
+
+    <!-- Approval Modal / Diff Card (Shown when review needed) -->
+    <div id="approval-card" class="glass rounded-2xl p-4 border border-amber-600/50 bg-amber-950/20 space-y-3 hidden">
+      <div class="flex justify-between items-center">
+        <h3 class="text-sm font-bold text-amber-400 flex items-center space-x-1.5">
+          <span>⚠️</span>
+          <span>Approval Required</span>
+        </h3>
+        <span id="approval-branch" class="text-xs font-mono text-gray-400"></span>
+      </div>
+
+      <!-- Verification Evidence Banner -->
+      <div id="verification-banner" class="p-2.5 rounded-xl text-xs space-y-1.5 border">
+        <div class="flex justify-between items-center">
+          <span id="verification-badge" class="font-bold text-xs"></span>
+          <span id="verification-time" class="text-[10px] text-gray-400 font-mono"></span>
+        </div>
+        <p id="verification-message" class="text-[11px] text-gray-300"></p>
+        <details id="verification-log-details" class="text-[11px] hidden">
+          <summary class="cursor-pointer text-blue-400 font-mono">View test output</summary>
+          <pre id="verification-stdout" class="bg-black/60 p-2 rounded text-[10px] font-mono text-gray-300 overflow-x-auto max-h-32 mt-1"></pre>
+        </details>
+      </div>
+
+      <!-- Unverified Warning & Override Checkbox -->
+      <div id="unverified-override-box" class="hidden p-2 rounded-xl bg-red-950/40 border border-red-800/60 text-xs text-red-300 space-y-1.5">
+        <div class="font-semibold text-red-400">⚠️ Caution: Code is Unverified</div>
+        <label class="flex items-center space-x-2 text-[11px] cursor-pointer">
+          <input type="checkbox" id="unverified-ack" onchange="toggleApproveButton()" class="rounded bg-gray-900 border-gray-700 text-amber-500 focus:ring-0">
+          <span>I understand no tests were run and confirm unverified merge</span>
+        </label>
+      </div>
+
+      <p class="text-xs text-gray-300">Review the reviewed candidate commit diff below:</p>
+      <pre id="approval-diff" class="bg-black/70 p-3 rounded-xl text-[11px] font-mono text-emerald-400 overflow-x-auto max-h-48 border border-gray-800"></pre>
+      <div class="grid grid-cols-2 gap-2 pt-1">
+        <button onclick="rejectCurrentTask()" class="py-2.5 rounded-xl bg-red-900/40 border border-red-700 text-red-300 text-xs font-semibold active:bg-red-800">
+          ✕ Discard Worktree
+        </button>
+        <button id="approve-btn" onclick="approveCurrentTask()" class="py-2.5 rounded-xl bg-emerald-600 border border-emerald-500 text-white text-xs font-bold shadow-lg shadow-emerald-900/40 active:bg-emerald-500">
+          ✓ Approve & Merge
+        </button>
+      </div>
+    </div>
+
+    <!-- Live Execution Stream / Console -->
+    <div class="glass rounded-2xl p-3 border border-gray-800 flex flex-col h-44">
+      <div class="flex justify-between items-center border-b border-gray-800 pb-1.5 mb-2">
+        <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Live Fleet Log</span>
+        <button onclick="clearLogs()" class="text-[11px] text-gray-500 hover:text-gray-300">Clear</button>
+      </div>
+      <div id="terminal-stream" class="flex-1 overflow-y-auto font-mono text-[11px] space-y-1 text-gray-300">
+        <div class="text-gray-500 italic">> OmniDev Mobile Client initialized. Ready for instructions.</div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- Bottom Voice & Input Dock -->
+  <footer class="glass border-t border-gray-800 px-4 py-3 space-y-3">
+    <!-- Text Input Bar -->
+    <div class="flex items-center space-x-2 bg-gray-900/80 rounded-2xl border border-gray-700/80 px-3 py-1.5">
+      <input id="prompt-input" type="text" placeholder="Type or speak a task..." 
+        class="bg-transparent flex-1 text-sm outline-none text-gray-100 placeholder-gray-500">
+      <button onclick="submitPrompt()" class="bg-blue-600 hover:bg-blue-500 text-white rounded-xl p-2 text-xs font-bold transition">
+        ➔
+      </button>
+    </div>
+
+    <!-- Voice Recording Orb -->
+    <div class="flex flex-col items-center justify-center pt-1">
+      <button id="voice-btn" onclick="toggleVoice()" 
+        class="w-14 h-14 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white text-2xl shadow-lg shadow-blue-500/30 active:scale-95 transition">
+        🎙️
+      </button>
+      <span id="voice-label" class="text-[11px] text-gray-400 mt-1">Tap to speak</span>
+    </div>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "name": "omnidev-daemon",
+  "version": "1.0.0",
+  "description": "OmniDev Hub: Smart Multi-Agent Fleet Controller & Privacy Router",
+  "type": "module",
+  "main": "src/server.ts",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "test": "tsx ../tests/verify-engine.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.10",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

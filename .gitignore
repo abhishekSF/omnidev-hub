@@ -1,0 +1,10 @@
+node_modules/
+.test-tmp/
+.omnidev/
+dist/
+build/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
