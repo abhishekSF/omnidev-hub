@@ -311,4 +311,44 @@ export class WorktreeManager {
       // Ignored
     }
   }
+
+  /**
+   * Reattach a persisted worktree after daemon restart.
+   * Returns null if the checkout is gone or HEAD no longer matches the frozen candidate.
+   */
+  public static restoreWorktree(saved: {
+    taskId: string;
+    repoPath: string;
+    worktreePath: string;
+    branchName: string;
+    baseBranch: string;
+    baseCommit: string;
+    candidateCommit?: string;
+    createdAt: string | Date;
+  }): IsolatedWorktree | null {
+    if (!saved.worktreePath || !fs.existsSync(saved.worktreePath)) {
+      return null;
+    }
+    try {
+      const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: saved.worktreePath,
+        encoding: 'utf8'
+      }).trim();
+      if (saved.candidateCommit && head !== saved.candidateCommit) {
+        return null;
+      }
+      return {
+        taskId: saved.taskId,
+        repoPath: saved.repoPath,
+        worktreePath: saved.worktreePath,
+        branchName: saved.branchName,
+        baseBranch: saved.baseBranch,
+        baseCommit: saved.baseCommit,
+        candidateCommit: saved.candidateCommit,
+        createdAt: saved.createdAt instanceof Date ? saved.createdAt : new Date(saved.createdAt)
+      };
+    } catch {
+      return null;
+    }
+  }
 }

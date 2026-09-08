@@ -4,33 +4,74 @@ let pendingApprovalTaskId = null;
 let pendingApprovalCommit = null;
 let recognition = null;
 let isRecording = false;
+let reconnectTimer = null;
 
-// Token management
-function getAuthToken() {
-  const urlParams = new URLSearchParams(window.location.search);
-  let token = urlParams.get('token');
-  if (token) {
-    localStorage.setItem('omnidev_token', token);
-    return token;
+function stripTokenFromUrl() {
+  const url = new URL(window.location.href);
+  if (url.searchParams.has('token')) {
+    url.searchParams.delete('token');
+    const next = url.pathname + (url.searchParams.toString() ? `?${url.searchParams}` : '') + url.hash;
+    history.replaceState({}, '', next);
+    log('Query-string tokens are no longer accepted. Pair with the daemon code instead.');
   }
-  token = localStorage.getItem('omnidev_token');
-  if (!token) {
-    token = prompt('Enter your OmniDev Hub Auth Token (displayed in daemon terminal):');
-    if (token) localStorage.setItem('omnidev_token', token.trim());
-  }
-  return token || '';
 }
 
-// Initialize WebSocket connection
+async function api(pathname, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (options.body && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json';
+  }
+  const res = await fetch(pathname, {
+    credentials: 'same-origin',
+    ...options,
+    headers
+  });
+  return res;
+}
+
+function showPairing(message) {
+  const overlay = document.getElementById('pairing-overlay');
+  overlay.classList.remove('hidden');
+  overlay.style.display = 'flex';
+  const err = document.getElementById('pairing-error');
+  if (message) {
+    err.textContent = message;
+    err.classList.remove('hidden');
+  } else {
+    err.classList.add('hidden');
+  }
+}
+
+function hidePairing() {
+  const overlay = document.getElementById('pairing-overlay');
+  overlay.classList.add('hidden');
+  overlay.style.display = 'none';
+}
+
+async function ensureSession() {
+  const status = await api('/api/session');
+  return status.ok;
+}
+
+async function pairWithSecret(secret) {
+  const res = await api('/api/session', {
+    method: 'POST',
+    body: JSON.stringify({ pairingCode: secret })
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Pairing failed');
+  }
+}
+
 function initWebSocket() {
-  const token = getAuthToken();
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}?token=${encodeURIComponent(token)}`;
+  const wsUrl = `${protocol}//${window.location.host}`;
 
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
-    log('Connected to OmniDev Fleet Host (Authenticated).');
+    log('Connected to OmniDev Hub (session cookie).');
     document.getElementById('fleet-status-dot').className = 'w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse';
   };
 
@@ -44,14 +85,24 @@ function initWebSocket() {
   };
 
   ws.onclose = (event) => {
-    log(`Disconnected from host (code: ${event.code}). Reconnecting in 3s...`);
+    log(`Disconnected from host (code: ${event.code}).`);
     document.getElementById('fleet-status-dot').className = 'w-2 h-2 rounded-full bg-red-500 inline-block';
-    if (event.code === 4401) {
-      localStorage.removeItem('omnidev_token');
-      alert('Authentication failed: Invalid Token.');
-    } else {
-      setTimeout(initWebSocket, 3000);
+    if (event.code === 4401 || event.code === 1008) {
+      showPairing('Session expired. Enter a new pairing code.');
+      return;
     }
+    if (event.code === 1006 || event.code === 1002 || event.code === 1000) {
+      // 401 on upgrade often surfaces as an abnormal close.
+      ensureSession().then((ok) => {
+        if (!ok) {
+          showPairing('Pair this device to continue.');
+          return;
+        }
+        reconnectTimer = setTimeout(initWebSocket, 3000);
+      });
+      return;
+    }
+    reconnectTimer = setTimeout(initWebSocket, 3000);
   };
 }
 
@@ -60,9 +111,14 @@ function handleServerMessage(msg) {
     case 'FLEET_INIT':
       updateFleetTelemetry(msg.profile, msg.leases);
       updateRepositorySelect(msg.allowedRepositories);
+      updateEngineAvailability(msg.availableEngines);
       if (msg.pendingApprovals && msg.pendingApprovals.length > 0) {
         showApprovalModal(msg.pendingApprovals[0]);
       }
+      break;
+
+    case 'REPOS_UPDATED':
+      updateRepositorySelect(msg.allowedRepositories);
       break;
 
     case 'FLEET_UPDATE':
@@ -91,18 +147,44 @@ function handleServerMessage(msg) {
       break;
 
     case 'ERROR':
-      log(`[ERROR] ${msg.error}`);
+      log(`[ERROR] ${typeof msg.error === 'string' ? msg.error : (msg.error?.error || JSON.stringify(msg.error))}`);
       break;
   }
 }
 
 function updateRepositorySelect(repos) {
   const select = document.getElementById('repo-select');
+  const previous = select.value;
+  select.replaceChildren();
   if (!repos || repos.length === 0) {
-    select.innerHTML = '<option value="">No repositories registered</option>';
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'No repositories registered';
+    select.appendChild(opt);
     return;
   }
-  select.innerHTML = repos.map(r => `<option value="${r}">${r}</option>`).join('');
+  for (const repo of repos) {
+    const opt = document.createElement('option');
+    opt.value = repo;
+    opt.textContent = repo;
+    select.appendChild(opt);
+  }
+  if (previous && repos.includes(previous)) {
+    select.value = previous;
+  }
+}
+
+function updateEngineAvailability(engines) {
+  if (!engines) return;
+  const available = new Set(engines.filter((e) => e.available).map((e) => e.id));
+  for (const id of ['cursor', 'antigravity', 'opencode']) {
+    const chip = document.getElementById(`chip-${id}`);
+    if (!chip) continue;
+    const found = available.has(id);
+    chip.disabled = !found;
+    chip.style.opacity = found ? '1' : '0.4';
+    chip.title = found ? '' : 'CLI not found on this host';
+  }
 }
 
 function updateFleetTelemetry(profile, leases) {
@@ -141,21 +223,24 @@ function log(text) {
 }
 
 function clearLogs() {
-  document.getElementById('terminal-stream').innerHTML = '';
+  document.getElementById('terminal-stream').replaceChildren();
 }
 
 function setEngine(engine) {
+  const chip = document.getElementById(`chip-${engine}`);
+  if (chip && chip.disabled) return;
   currentEngine = engine;
-  document.querySelectorAll('.engine-chip').forEach(chip => {
-    chip.className = 'engine-chip py-2 px-3 rounded-xl border border-gray-800 bg-gray-900/60 text-gray-400 font-medium flex items-center justify-between';
-    const span = chip.querySelectorAll('span')[1];
-    if (span) span.remove();
+  document.querySelectorAll('.engine-chip').forEach((el) => {
+    el.className = 'engine-chip py-2 px-3 rounded-xl border border-gray-800 bg-gray-900/60 text-gray-400 font-medium flex items-center justify-between';
+    const extra = el.querySelector('[data-check="1"]');
+    if (extra) extra.remove();
   });
 
   const selected = document.getElementById(`chip-${engine}`);
   if (selected) {
     selected.className = 'engine-chip py-2 px-3 rounded-xl border border-blue-500 bg-blue-950/60 text-blue-300 font-medium flex items-center justify-between';
     const check = document.createElement('span');
+    check.dataset.check = '1';
     check.textContent = '✓';
     selected.appendChild(check);
   }
@@ -167,9 +252,9 @@ function submitPrompt() {
   const prompt = input.value.trim();
   const repoPath = repoSelect.value;
 
-  if (!prompt || !ws) return;
+  if (!prompt || !ws || ws.readyState !== WebSocket.OPEN) return;
   if (!repoPath) {
-    alert('Please select an approved repository from the dropdown.');
+    alert('Register and select a repository first.');
     return;
   }
 
@@ -179,9 +264,11 @@ function submitPrompt() {
   const pipelineCard = document.getElementById('pipeline-card');
   pipelineCard.classList.remove('hidden');
   document.getElementById('active-task-id').textContent = taskId;
-  document.getElementById('pipeline-stepper').innerHTML = `
-    <div class="text-blue-400">⏳ 1. Initializing isolated worktree...</div>
-  `;
+  document.getElementById('pipeline-stepper').replaceChildren();
+  const step = document.createElement('div');
+  step.className = 'text-blue-400';
+  step.textContent = '⏳ 1. Initializing isolated worktree...';
+  document.getElementById('pipeline-stepper').appendChild(step);
 
   ws.send(JSON.stringify({
     type: 'DISPATCH_TASK',
@@ -226,7 +313,6 @@ function showApprovalModal(data) {
   document.getElementById('approval-branch').textContent = `${data.branch} (${data.candidateCommit ? data.candidateCommit.slice(0, 7) : 'HEAD'})`;
   document.getElementById('approval-diff').textContent = data.diff;
 
-  // Verification Evidence handling
   const v = data.verification;
   const vBanner = document.getElementById('verification-banner');
   const vBadge = document.getElementById('verification-badge');
@@ -303,7 +389,6 @@ function rejectCurrentTask() {
   hideApprovalModal();
 }
 
-// Voice Recognition via Web Speech API
 function toggleVoice() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognition) {
@@ -331,7 +416,6 @@ function toggleVoice() {
     const transcript = event.results[0][0].transcript;
     document.getElementById('prompt-input').value = transcript;
     log(`Voice input captured: "${transcript}"`);
-    submitPrompt();
   };
 
   recognition.onend = () => {
@@ -350,12 +434,53 @@ function toggleVoice() {
   recognition.start();
 }
 
-// Enter key to submit
+async function addRepository() {
+  const input = document.getElementById('repo-add-input');
+  const repoPath = input.value.trim();
+  if (!repoPath) return;
+  const res = await api('/api/repos', {
+    method: 'POST',
+    body: JSON.stringify({ path: repoPath })
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    alert(body.error || 'Failed to register repository');
+    return;
+  }
+  updateRepositorySelect(body.repositories);
+  input.value = '';
+  log(`Registered repository ${repoPath}`);
+}
+
 document.getElementById('prompt-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     submitPrompt();
   }
 });
 
-// Start on load
-window.addEventListener('load', initWebSocket);
+document.getElementById('pairing-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const secret = document.getElementById('pairing-input').value.trim();
+  if (!secret) return;
+  try {
+    await pairWithSecret(secret);
+    hidePairing();
+    initWebSocket();
+  } catch (err) {
+    showPairing(err.message);
+  }
+});
+
+document.getElementById('repo-add-btn').addEventListener('click', () => {
+  addRepository();
+});
+
+window.addEventListener('load', async () => {
+  stripTokenFromUrl();
+  const paired = await ensureSession();
+  if (!paired) {
+    showPairing();
+    return;
+  }
+  initWebSocket();
+});
