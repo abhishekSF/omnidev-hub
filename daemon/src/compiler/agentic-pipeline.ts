@@ -9,6 +9,8 @@ import { AntiGravityAdapter } from '../adapters/antigravity.js';
 import { CursorCLIAdapter } from '../adapters/cursor.js';
 import { OpenCodeAdapter } from '../adapters/opencode.js';
 import { HardwareProfiler } from '../fleet/hardware-profiler.js';
+import { isEngineAvailable } from '../adapters/probe.js';
+import { MAX_RETAINED_FAILED, PersistedTask, TaskStateStore } from '../state/store.js';
 
 export interface PipelineTaskRequest {
   id: string;
@@ -55,13 +57,20 @@ export interface AdapterFactory {
   createCodingAdapter: (engine: string) => { execute: (opts: any) => Promise<void>; abort: () => Promise<void>; on: any };
 }
 
+export interface CoordinatorOptions {
+  stateFile?: string;
+}
+
 export class AgenticPipelineCoordinator extends EventEmitter {
   private tasks: Map<string, TaskContext> = new Map();
   private activeRepos: Set<string> = new Set();
   private adapterFactory: AdapterFactory;
+  private readonly useDefaultAdapters: boolean;
+  private readonly store: TaskStateStore | null;
 
-  constructor(customFactory?: AdapterFactory) {
+  constructor(customFactory?: AdapterFactory, options: CoordinatorOptions = {}) {
     super();
+    this.useDefaultAdapters = !customFactory;
     this.adapterFactory = customFactory || {
       createPlanningAdapter: () => new AntiGravityAdapter(),
       createCodingAdapter: (engine) => {
@@ -71,6 +80,10 @@ export class AgenticPipelineCoordinator extends EventEmitter {
         return new CursorCLIAdapter();
       }
     };
+    this.store = options.stateFile ? new TaskStateStore(options.stateFile) : null;
+    if (this.store) {
+      this.hydrate();
+    }
   }
 
   public getTask(taskId: string): TaskContext | undefined {
@@ -221,6 +234,7 @@ export class AgenticPipelineCoordinator extends EventEmitter {
       this.emit('stage', { taskId: request.id, name: 'REFLECTION', engine: 'Verifier', status: 'COMPLETED', output: verification });
 
       taskCtx.status = 'AWAITING_APPROVAL';
+      this.persist();
 
       this.emit('approval_required', {
         taskId: request.id,
@@ -306,6 +320,7 @@ export class AgenticPipelineCoordinator extends EventEmitter {
           error: `Process termination unconfirmed: ${err.message}. Retaining workspace and lock.`
         });
         task.status = 'FAILED';
+        this.persist();
         return; // Retain worktree and lock!
       }
       task.activeProcess = undefined;
@@ -324,13 +339,93 @@ export class AgenticPipelineCoordinator extends EventEmitter {
 
   private finalizeTask(taskId: string): void {
     const task = this.tasks.get(taskId);
-    if (task) {
-      KeepAwakeManager.releaseLease(taskId);
-      this.activeRepos.delete(task.canonicalRepo);
+    if (!task) return;
+
+    KeepAwakeManager.releaseLease(taskId);
+    this.activeRepos.delete(task.canonicalRepo);
+
+    if (task.status === 'MERGED' || task.status === 'ROLLED_BACK') {
+      this.tasks.delete(taskId);
+    } else if (task.status === 'FAILED') {
+      this.pruneFailedTasks();
+    }
+
+    this.persist();
+  }
+
+  private persist(): void {
+    if (!this.store) return;
+    const payload: PersistedTask[] = [];
+    for (const task of this.tasks.values()) {
+      if (task.status !== 'AWAITING_APPROVAL' && task.status !== 'FAILED') continue;
+      payload.push({
+        id: task.id,
+        canonicalRepo: task.canonicalRepo,
+        status: task.status,
+        candidateCommit: task.candidateCommit,
+        diff: task.diff,
+        plan: task.plan,
+        verification: task.verification as unknown as Record<string, unknown>,
+        worktree: task.worktree
+          ? {
+              taskId: task.worktree.taskId,
+              repoPath: task.worktree.repoPath,
+              worktreePath: task.worktree.worktreePath,
+              branchName: task.worktree.branchName,
+              baseBranch: task.worktree.baseBranch,
+              baseCommit: task.worktree.baseCommit,
+              candidateCommit: task.worktree.candidateCommit,
+              createdAt: task.worktree.createdAt.toISOString()
+            }
+          : null
+      });
+    }
+    this.store.save(payload);
+  }
+
+  private hydrate(): void {
+    if (!this.store) return;
+    for (const saved of this.store.load()) {
+      if (saved.status !== 'AWAITING_APPROVAL' || !saved.worktree || !saved.candidateCommit) {
+        continue;
+      }
+      const worktree = WorktreeManager.restoreWorktree(saved.worktree);
+      if (!worktree) {
+        continue;
+      }
+      const taskCtx: TaskContext = {
+        id: saved.id,
+        canonicalRepo: saved.canonicalRepo,
+        worktree,
+        lease: null,
+        candidateCommit: saved.candidateCommit,
+        diff: saved.diff,
+        plan: saved.plan,
+        verification: saved.verification as unknown as VerificationEvidence | undefined,
+        status: 'AWAITING_APPROVAL',
+        isCancelled: false
+      };
+      this.tasks.set(taskCtx.id, taskCtx);
+      this.activeRepos.add(taskCtx.canonicalRepo);
+      this.emit('log', `[Orchestrator] Restored pending approval ${taskCtx.id} @ ${taskCtx.candidateCommit?.slice(0, 7)}`);
+    }
+  }
+
+  private pruneFailedTasks(): void {
+    const failed = Array.from(this.tasks.values()).filter((t) => t.status === 'FAILED');
+    if (failed.length <= MAX_RETAINED_FAILED) return;
+    const drop = failed.slice(0, failed.length - MAX_RETAINED_FAILED);
+    for (const task of drop) {
+      this.tasks.delete(task.id);
     }
   }
 
   private async executePlanning(taskCtx: TaskContext, request: PipelineTaskRequest, cwd: string): Promise<string> {
+    if (this.useDefaultAdapters && !isEngineAvailable('antigravity')) {
+      this.emit('log', '[Orchestrator] Anti-Gravity CLI (agy) not found; skipping planning stage.');
+      return `Plan: execute task "${request.prompt}"`;
+    }
+
     return new Promise((resolve, reject) => {
       taskCtx.cancelCurrentStage = (err: Error) => reject(err);
       const adapter = this.adapterFactory.createPlanningAdapter('antigravity');
@@ -500,7 +595,7 @@ export class AgenticPipelineCoordinator extends EventEmitter {
     }
 
     // 2. Resolve designated test command from trusted repository configuration
-    let designatedCommand: string | null = null;
+    let designatedCommand: string | string[] | null = null;
     const configPath = path.join(repoPath, '.omnidev', 'config.json');
     if (fs.existsSync(configPath)) {
       try {
@@ -520,7 +615,7 @@ export class AgenticPipelineCoordinator extends EventEmitter {
         try {
           const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
           if (pkg.scripts?.test && !pkg.scripts.test.includes('no test specified')) {
-            designatedCommand = 'npm test';
+            designatedCommand = ['npm', 'test'];
           }
         } catch {
           // Ignored
@@ -543,6 +638,9 @@ export class AgenticPipelineCoordinator extends EventEmitter {
       };
     }
 
+    const argv = commandToArgv(designatedCommand);
+    const commandLabel = argv.join(' ');
+
     // 3. Designated command exists: Protect tracked files before running verifier!
     const unprotectFiles = this.protectCandidateFiles(worktreePath, candidateCommit);
     let cmdStdout = '';
@@ -550,9 +648,8 @@ export class AgenticPipelineCoordinator extends EventEmitter {
     let cmdExitCode = 0;
 
     try {
-      const parts = designatedCommand.split(' ').map(s => s.trim()).filter(s => s.length > 0);
-      const bin = parts[0];
-      const args = parts.slice(1).map(a => a.replace(/^["']|["']$/g, ''));
+      const bin = argv[0];
+      const args = argv.slice(1);
       const out = execFileSync(bin, args, {
         cwd: worktreePath,
         timeout: 60000,
@@ -584,7 +681,7 @@ export class AgenticPipelineCoordinator extends EventEmitter {
         status: 'FAILED',
         passed: false,
         isDesignatedCheck: true,
-        command: designatedCommand,
+        command: commandLabel,
         stdout: cmdStdout,
         stderr: `Source mutation detected during verification: Working copy differs from frozen candidate commit ${candidateCommit}.`,
         exitCode: cmdExitCode !== 0 ? cmdExitCode : 1,
@@ -601,12 +698,12 @@ export class AgenticPipelineCoordinator extends EventEmitter {
         status: 'FAILED',
         passed: false,
         isDesignatedCheck: true,
-        command: designatedCommand,
+        command: commandLabel,
         stdout: cmdStdout,
         stderr: cmdStderr,
         exitCode: cmdExitCode,
         durationMs: Date.now() - startTime,
-        message: `Designated verification "${designatedCommand}" failed with exit code ${cmdExitCode}.`,
+        message: `Designated verification "${commandLabel}" failed with exit code ${cmdExitCode}.`,
         verifiedCommit: candidateCommit,
         baseCommit,
         checkedAt: new Date().toISOString()
@@ -617,15 +714,26 @@ export class AgenticPipelineCoordinator extends EventEmitter {
       status: 'VERIFIED',
       passed: true,
       isDesignatedCheck: true,
-      command: designatedCommand,
+      command: commandLabel,
       stdout: cmdStdout,
       stderr: cmdStderr,
       exitCode: 0,
       durationMs: Date.now() - startTime,
-      message: `Designated verification "${designatedCommand}" passed cleanly.`,
+      message: `Designated verification "${commandLabel}" passed cleanly.`,
       verifiedCommit: candidateCommit,
       baseCommit,
       checkedAt: new Date().toISOString()
     };
   }
+}
+
+function commandToArgv(command: string | string[]): string[] {
+  if (Array.isArray(command)) {
+    return command.map((part) => String(part)).filter((s) => s.length > 0);
+  }
+  return command
+    .split(' ')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((a) => a.replace(/^["']|["']$/g, ''));
 }
