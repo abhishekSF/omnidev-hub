@@ -78,4 +78,61 @@ async function runTests() {
   console.log('\n2. Testing Hardware Profiler & Clean Timer Release...');
   const profile = HardwareProfiler.getProfile();
   assert(typeof profile.hostname === 'string' && profile.hostname.length > 0, 'Hostname identified');
-  assert(profile.cpuCores > 0, `CPU cores detected: ${profile.cpuCores} cores');
+  assert(profile.cpuCores > 0, `CPU cores detected: ${profile.cpuCores} cores`);
+
+  const testTaskId = `valid_task_${Date.now()}`;
+  const lease = KeepAwakeManager.acquireLease(testTaskId, 'Testing timer cleanup', 10);
+  assert(lease.active && lease.timer !== undefined, 'Lease created with clearable unref timer');
+  KeepAwakeManager.releaseLease(testTaskId);
+  assert(!KeepAwakeManager.getActiveLeases().some(l => l.id === testTaskId), 'Lease released and cleared');
+
+  // --- TEST 3: Privacy Fencing: Default-Deny & Secret Override ---
+  console.log('\n3. Testing Privacy Fencing: Default-Deny & Secret Override...');
+  const privRepo = path.join(testBaseDir, 'priv_repo');
+  fs.mkdirSync(privRepo, { recursive: true });
+  fs.writeFileSync(path.join(privRepo, '.env'), 'API_SECRET=supersecret');
+
+  const omniDir = path.join(privRepo, '.omnidev');
+  fs.mkdirSync(omniDir, { recursive: true });
+  fs.writeFileSync(path.join(omniDir, 'config.json'), JSON.stringify({ privacy: 'PUBLIC_SCRATCH' }));
+
+  const privReport = PrivacyPolicyEngine.evaluateRepository(privRepo);
+  assert(privReport.privacyLevel === 'STRICT_PRIVATE', 'Secret files override PUBLIC_SCRATCH config; forced to STRICT_PRIVATE');
+  assert(!privReport.allowedEngines.includes('opencode'), 'OpenCode excluded from allowed engines on private repo');
+
+  let opencodeBlocked = false;
+  try {
+    PrivacyPolicyEngine.assertDispatchAllowed(privRepo, 'opencode');
+  } catch {
+    opencodeBlocked = true;
+  }
+  assert(opencodeBlocked, 'Blocked opencode dispatch on private repository');
+
+  let unknownBlocked = false;
+  try {
+    PrivacyPolicyEngine.assertDispatchAllowed(privRepo, 'unknown-model-provider');
+  } catch {
+    unknownBlocked = true;
+  }
+  assert(unknownBlocked, 'Default-deny blocked unrecognized provider identifier');
+
+  // --- TEST 4: Truthful Adapter Failure When Binaries Are Missing ---
+  console.log('\n4. Testing Truthful Adapter Failure When Binaries Are Missing...');
+  const agyAdapter = new AntiGravityAdapter();
+  let agyFailedTruthfully = false;
+
+  await new Promise<void>((resolve) => {
+    agyAdapter.on('event', (ev) => {
+      if (ev.type === 'error' || (ev.type === 'done' && ev.data?.exitCode !== 0)) {
+        agyFailedTruthfully = true;
+      }
+      if (ev.type === 'done') {
+        resolve();
+      }
+    });
+    agyAdapter.execute({ prompt: 'test', cwd: testBaseDir }).catch(() => {
+      agyFailedTruthfully = true;
+      resolve();
+    });
+  });
+  assert(agyFailedTruthfully, "AntiGravityAdapter truthfully reports error/exitCode when 'agy' fails to spawn (no mock success)");
