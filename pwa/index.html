@@ -31,13 +31,24 @@
 </head>
 <body class="text-gray-100 font-sans min-h-screen flex flex-col justify-between select-none">
 
+  <div id="pairing-overlay" class="hidden" style="position:fixed;inset:0;z-index:100;background:rgba(13,17,23,0.96);display:none;align-items:center;justify-content:center;padding:24px;">
+    <form id="pairing-form" class="glass w-full max-w-sm rounded-2xl border border-gray-700 p-5 space-y-3">
+      <h2 class="text-sm font-bold tracking-wide">Pair this device</h2>
+      <p class="text-xs text-gray-400">Enter the 6-character pairing code from the daemon terminal, or the token in <span class="font-mono">~/.omnidev/token</span>. The token is never placed in the URL.</p>
+      <input id="pairing-input" type="text" autocomplete="one-time-code" placeholder="Pairing code or token"
+        class="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-gray-100 outline-none focus:border-blue-500">
+      <p id="pairing-error" class="text-xs text-red-400 hidden"></p>
+      <button type="submit" class="w-full py-2.5 rounded-xl bg-blue-600 text-white text-sm font-semibold">Pair</button>
+    </form>
+  </div>
+
   <!-- Top Navigation & Fleet Status Header -->
   <header class="glass sticky top-0 z-50 border-b border-gray-800 px-4 py-3">
     <div class="flex items-center justify-between">
       <div class="flex items-center space-x-2">
         <span class="text-xl">⚡</span>
         <div>
-          <h1 class="font-bold text-sm leading-tight tracking-wide">OmniDev Fleet</h1>
+          <h1 class="font-bold text-sm leading-tight tracking-wide">OmniDev Hub</h1>
           <div class="flex items-center space-x-1.5 text-xs text-gray-400">
             <span id="fleet-status-dot" class="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse"></span>
             <span id="fleet-host-name">Connecting...</span>
@@ -67,7 +78,7 @@
       </div>
       <div>
         <span class="text-gray-400">Keep-Awake:</span>
-        <span id="keepawake-status" class="text-emerald-400 font-medium ml-1">Active Lease</span>
+        <span id="keepawake-status" class="text-gray-400 font-medium ml-1">Idle</span>
       </div>
     </div>
 
@@ -75,8 +86,14 @@
     <div>
       <label class="text-xs text-gray-400 font-medium uppercase tracking-wider block mb-1.5">Target Workspace Repository</label>
       <select id="repo-select" class="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500">
-        <option value="">Loading allowed repositories...</option>
+        <option value="">No repositories registered</option>
       </select>
+      <div class="flex items-center space-x-2 mt-2">
+        <input id="repo-add-input" type="text" placeholder="/absolute/path/to/git/repo"
+          class="flex-1 bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-xs text-gray-200 outline-none focus:border-blue-500">
+        <button id="repo-add-btn" type="button" class="shrink-0 px-3 py-2 rounded-xl bg-gray-800 border border-gray-700 text-xs text-gray-200">Add</button>
+      </div>
+      <p class="text-[11px] text-gray-500 mt-1">Repos must be registered explicitly. cwd is not allowlisted.</p>
     </div>
 
     <!-- Target IDE Selector Chips -->
@@ -84,8 +101,8 @@
       <label class="text-xs text-gray-400 font-medium uppercase tracking-wider block mb-2">Target Dispatch Engine</label>
       <div class="grid grid-cols-2 gap-2 text-xs">
         <button onclick="setEngine('auto')" id="chip-auto" class="engine-chip py-2 px-3 rounded-xl border border-blue-500 bg-blue-950/60 text-blue-300 font-medium flex items-center justify-between">
-          <span>⚡ Smart Compiler</span>
-          <span>✓</span>
+          <span>⚡ Auto</span>
+          <span data-check="1">✓</span>
         </button>
         <button onclick="setEngine('cursor')" id="chip-cursor" class="engine-chip py-2 px-3 rounded-xl border border-gray-800 bg-gray-900/60 text-gray-400 font-medium flex items-center justify-between">
           <span>Cursor CLI</span>
@@ -174,7 +191,7 @@
       <input id="prompt-input" type="text" placeholder="Type or speak a task..." 
         class="bg-transparent flex-1 text-sm outline-none text-gray-100 placeholder-gray-500">
       <button onclick="submitPrompt()" class="bg-blue-600 hover:bg-blue-500 text-white rounded-xl p-2 text-xs font-bold transition">
-        ➔
+        ➡
       </button>
     </div>
 
