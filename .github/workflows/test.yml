@@ -1,0 +1,22 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  daemon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: daemon/package-lock.json
+      - name: Install
+        working-directory: daemon
+        run: npm ci
+      - name: Test
+        working-directory: daemon
+        run: npm test
