@@ -22,18 +22,60 @@ export const AUTH_TOKEN = process.env.OMNIDEV_TOKEN || '';
 
 export { validateToken, RepositoryRegistry };
 
-const PWA_FILES = new Set(['/', '/app.js', '/manifest.json']);
+const MAX_JSON_BYTES = 64 * 1024;
+const WS_MAX_PAYLOAD_BYTES = 256 * 1024;
+
+const PWA_ASSETS: Record<string, { file: string; type: string }> = {
+  '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
+  '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
+  '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
+  '/manifest.json': { file: 'manifest.json', type: 'application/json; charset=utf-8' }
+};
 
 function extractBearer(header: string | undefined): string | null {
   if (!header || !header.startsWith('Bearer ')) return null;
   return header.slice(7).trim();
 }
 
+function httpError(statusCode: number, message: string): Error & { statusCode: number } {
+  const err = new Error(message) as Error & { statusCode: number };
+  err.statusCode = statusCode;
+  return err;
+}
+
+function resolvePwaAsset(pathname: string): { absPath: string; type: string } | null {
+  const asset = PWA_ASSETS[pathname];
+  if (!asset) return null;
+  // asset.file is a hardcoded basename; never join the raw URL path.
+  const absPath = path.resolve(PWA_DIR, asset.file);
+  if (path.dirname(absPath) !== path.resolve(PWA_DIR)) return null;
+  return { absPath, type: asset.type };
+}
+
 function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    let size = 0;
+    let settled = false;
+
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+
+    req.on('data', (chunk) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buf.length;
+      if (size > MAX_JSON_BYTES) {
+        fail(httpError(413, 'Request body too large'));
+        return;
+      }
+      chunks.push(buf);
+    });
     req.on('end', () => {
+      if (settled) return;
+      settled = true;
       try {
         const raw = Buffer.concat(chunks).toString('utf8').trim();
         if (!raw) {
@@ -45,7 +87,7 @@ function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown
         reject(err);
       }
     });
-    req.on('error', reject);
+    req.on('error', fail);
   });
 }
 
@@ -81,19 +123,11 @@ export function createOmniDevServer(options: ServerOptions = {}) {
         return;
       }
 
-      if (PWA_FILES.has(url.pathname) || url.pathname === '/') {
-        const filePath = path.join(PWA_DIR, url.pathname === '/' ? 'index.html' : url.pathname);
-        if (fs.existsSync(filePath)) {
-          const ext = path.extname(filePath);
-          const contentTypes: Record<string, string> = {
-            '.html': 'text/html',
-            '.js': 'text/javascript',
-            '.json': 'application/json'
-          };
-          res.writeHead(200, { 'Content-Type': contentTypes[ext] || 'text/plain' });
-          fs.createReadStream(filePath).pipe(res);
-          return;
-        }
+      const pwaAsset = resolvePwaAsset(url.pathname);
+      if (pwaAsset && fs.existsSync(pwaAsset.absPath)) {
+        res.writeHead(200, { 'Content-Type': pwaAsset.type });
+        res.end(fs.readFileSync(pwaAsset.absPath));
+        return;
       }
 
       if (url.pathname === '/api/session' && req.method === 'POST') {
@@ -199,13 +233,16 @@ export function createOmniDevServer(options: ServerOptions = {}) {
       res.end('Not Found');
     } catch (err: any) {
       if (!res.headersSent) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `Internal Server Error: ${err.message}` }));
+        const status = err?.statusCode === 413 ? 413 : 500;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: status === 413 ? 'Request body too large' : `Internal Server Error: ${err.message}`
+        }));
       }
     }
   }
 
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD_BYTES });
 
   server.on('upgrade', (req, socket, head) => {
     try {
