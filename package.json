@@ -2,5 +2,11 @@
   "name": "omnidev-hub",
   "version": "1.0.0",
   "private": true,
-  "type": "module"
+  "license": "MIT",
+  "description": "Local merge/verify control plane for coding agents. Not a multi-machine fleet product.",
+  "type": "module",
+  "scripts": {
+    "start": "npm start --prefix daemon",
+    "test": "npm test --prefix daemon"
+  }
 }

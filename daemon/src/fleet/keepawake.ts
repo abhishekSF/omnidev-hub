@@ -102,6 +102,9 @@ export class KeepAwakeManager {
         this.caffeinateProcess.on('exit', () => {
           this.caffeinateProcess = null;
         });
+        this.caffeinateProcess.on('error', () => {
+          this.caffeinateProcess = null;
+        });
       } catch (err) {
         console.error('[KeepAwake] Failed to launch caffeinate on macOS:', err);
       }
@@ -125,8 +128,33 @@ export class KeepAwakeManager {
           stdio: 'ignore',
           detached: false
         });
+        this.caffeinateProcess.on('error', () => {
+          this.caffeinateProcess = null;
+        });
       } catch (err) {
         console.error('[KeepAwake] Failed to spawn Windows keep-awake assertion:', err);
+      }
+    } else if (platform === 'linux') {
+      try {
+        this.caffeinateProcess = spawn('systemd-inhibit', [
+          '--what=idle:sleep',
+          '--who=OmniDev Hub',
+          '--why=Active agent task',
+          '--mode=block',
+          'sleep',
+          'infinity'
+        ], {
+          stdio: 'ignore',
+          detached: false
+        });
+        this.caffeinateProcess.on('error', () => {
+          this.caffeinateProcess = null;
+        });
+        this.caffeinateProcess.on('exit', () => {
+          this.caffeinateProcess = null;
+        });
+      } catch (err) {
+        console.error('[KeepAwake] systemd-inhibit unavailable; lease is tracked in-process only:', err);
       }
     }
   }

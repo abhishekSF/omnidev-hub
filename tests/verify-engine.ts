@@ -161,7 +161,6 @@ async function runTests() {
 
   // --- TEST 6: Branch Advancement Rejection ---
   console.log('\n6. Testing Branch Advancement Rejection (Post-Freeze Edits Blocked)...');
-  // Commit additional content on worktree branch AFTER freezing candidate
   fs.writeFileSync(path.join(worktree.worktreePath, 'post_freeze_edit.txt'), 'unreviewed content\n');
   execFileSync('git', ['add', 'post_freeze_edit.txt'], { cwd: worktree.worktreePath });
   execFileSync('git', ['commit', '-m', 'unreviewed post-freeze edit'], { cwd: worktree.worktreePath });
@@ -176,12 +175,10 @@ async function runTests() {
   }
   assert(branchAdvancementRejected, 'Rejected merge because worktree branch advanced after candidate was frozen');
 
-  // Reset worktree back to frozen candidate commit for further tests
   execFileSync('git', ['reset', '--hard', frozen.candidateCommit], { cwd: worktree.worktreePath });
 
   // --- TEST 7: Destination Branch Switching Rejection ---
   console.log('\n7. Testing Destination Branch Switching Rejection...');
-  // Switch main repo to a different branch
   execFileSync('git', ['checkout', '-b', 'other_branch'], { cwd: gitRepo });
 
   let branchSwitchRejected = false;
@@ -194,7 +191,6 @@ async function runTests() {
   }
   assert(branchSwitchRejected, 'Rejected merge because main repo switched branches away from target destination');
 
-  // Switch main repo back to original destination branch
   execFileSync('git', ['checkout', 'main'], { cwd: gitRepo });
 
   // --- TEST 8: Stale / Mismatched Approval Rejection ---
@@ -212,7 +208,6 @@ async function runTests() {
   fs.writeFileSync(path.join(worktree.worktreePath, 'base.txt'), 'worktree edit\n');
   const frozenConflict = WorktreeManager.freezeCandidate(worktree);
 
-  // Create conflict in main repo
   fs.writeFileSync(path.join(gitRepo, 'base.txt'), 'conflicting main edit\n');
   execFileSync('git', ['commit', '-am', 'conflicting commit in main'], { cwd: gitRepo });
   worktree.baseCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: gitRepo, encoding: 'utf8' }).trim();
@@ -243,7 +238,6 @@ async function runTests() {
   execFileSync('git', ['add', 'index.js'], { cwd: repoForReflection });
   execFileSync('git', ['commit', '-m', 'init'], { cwd: repoForReflection });
 
-  // Add .omnidev/config.json with a designated verification command that fails
   const omniReflectDir = path.join(repoForReflection, '.omnidev');
   fs.mkdirSync(omniReflectDir, { recursive: true });
   fs.writeFileSync(path.join(omniReflectDir, 'config.json'), JSON.stringify({
@@ -309,7 +303,6 @@ async function runTests() {
   const taskA = `task_alias_a_${Date.now()}`;
   const taskB = `task_alias_b_${Date.now()}`;
 
-  // Start task on canonical path
   coordinatorAlias.runPipeline({
     id: taskA,
     repoPath: aliasRepo,
@@ -322,7 +315,6 @@ async function runTests() {
     }
   });
 
-  // Attempt second task with trailing slash alias on same repo
   await coordinatorAlias.runPipeline({
     id: taskB,
     repoPath: aliasRepo + path.sep,
@@ -340,7 +332,7 @@ async function runTests() {
   const cancelFactory: AdapterFactory = {
     createPlanningAdapter: () => {
       planningEmitter = new EventEmitter() as any;
-      planningEmitter.execute = async () => {}; // Never auto-completes until manual event
+      planningEmitter.execute = async () => {};
       planningEmitter.abort = async () => {};
       return planningEmitter;
     },
@@ -363,14 +355,11 @@ async function runTests() {
     prompt: 'cancel task'
   });
 
-  // Abort while in planning
   await coordinatorCancel.abortTask(cancelTaskId);
 
-  // Emit late planning completion event
   planningEmitter.emit('event', { type: 'step', data: { plan: 'Late Plan' } });
   planningEmitter.emit('event', { type: 'done', data: { exitCode: 0 } });
 
-  // Wait 50ms to ensure coding stage is NOT triggered
   await new Promise(r => setTimeout(r, 50));
   assert(!codingStartedAfterCancel, 'Cancellation prevented late planning event from starting coding stage');
 
@@ -394,12 +383,10 @@ async function runTests() {
   fs.mkdirSync(insideRoot, { recursive: true });
   RepositoryRegistry.setAllowedRoots([insideRoot]);
 
-  // Create symlink inside allowedRoot pointing to outside directory
   const symlinkPath = path.join(insideRoot, 'symlink_to_outside');
   try {
     fs.symlinkSync(outsideDir, symlinkPath, 'dir');
   } catch {
-    // Fallback if symlinks restricted
   }
 
   if (fs.existsSync(symlinkPath)) {
@@ -441,7 +428,12 @@ async function runTests() {
   const testCoordinator = new AgenticPipelineCoordinator(e2eFactory);
   const { server: testServer } = createOmniDevServer({ token: testToken, coordinator: testCoordinator });
 
-  function dispatchRequest(server: any, options: { method?: string; url: string; headers?: Record<string, string> }): Promise<{ status: number; body: string }> {
+  function dispatchRequest(server: any, options: {
+    method?: string;
+    url: string;
+    headers?: Record<string, string>;
+    body?: string;
+  }): Promise<{ status: number; body: string; headers: Record<string, string> }> {
     return new Promise((resolve) => {
       const req = new EventEmitter() as any;
       req.method = options.method || 'GET';
@@ -450,34 +442,49 @@ async function runTests() {
 
       let statusCode = 200;
       let responseBody = '';
+      const headers: Record<string, string> = {};
       const res = new EventEmitter() as any;
-      res.setHeader = () => {};
-      res.writeHead = (code: number) => {
+      res.setHeader = (k: string, v: string) => {
+        headers[k.toLowerCase()] = v;
+      };
+      res.writeHead = (code: number, extra?: Record<string, string>) => {
         statusCode = code;
+        if (extra) {
+          for (const [k, v] of Object.entries(extra)) {
+            headers[k.toLowerCase()] = v;
+          }
+        }
       };
       res.end = (chunk?: any) => {
         if (chunk) responseBody += chunk.toString();
-        resolve({ status: statusCode, body: responseBody });
+        resolve({ status: statusCode, body: responseBody, headers });
       };
 
       server.emit('request', req, res);
+      if (options.body !== undefined) {
+        req.emit('data', Buffer.from(options.body));
+        req.emit('end');
+      }
     });
   }
 
-  // Malformed Bearer header (Bearer x against longer secret)
   const malformedRes = await dispatchRequest(testServer, {
     url: '/api/fleet',
     headers: { 'authorization': 'Bearer x' }
   });
   assert(malformedRes.status === 401, 'Malformed short token header returned 401 response without terminating daemon');
 
-  // Authenticated HTTP query
-  const authRes = await dispatchRequest(testServer, {
+  const queryTokenRes = await dispatchRequest(testServer, {
     url: `/api/fleet?token=${testToken}`
   });
-  assert(authRes.status === 200, 'Valid token HTTP query accepted with 200');
+  assert(queryTokenRes.status === 401, 'Query-string token is rejected with 401');
 
-  // Run end-to-end task through test coordinator
+  const authRes = await dispatchRequest(testServer, {
+    url: '/api/fleet',
+    headers: { 'authorization': `Bearer ${testToken}` }
+  });
+  assert(authRes.status === 200, 'Valid Bearer token HTTP request accepted with 200');
+
   const e2eRepo = path.join(testBaseDir, 'e2e_final_repo');
   fs.mkdirSync(e2eRepo, { recursive: true });
   execFileSync('git', ['init', '-b', 'main'], { cwd: e2eRepo });
@@ -530,7 +537,6 @@ async function runTests() {
   execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: repo16 });
   RepositoryRegistry.register(repo16);
 
-  // Configure a verifier that attempts to mutate app.ts to "fixed" and exits 0
   const omniDir16 = path.join(repo16, '.omnidev');
   fs.mkdirSync(omniDir16, { recursive: true });
   const mutatingVerifierScript = path.join(omniDir16, 'mutating-verifier.js');
@@ -568,7 +574,6 @@ try {
     createCodingAdapter: () => {
       const emitter = new EventEmitter() as any;
       emitter.execute = async (opts: any) => {
-        // Leaves app.ts broken
         fs.writeFileSync(path.join(opts.cwd, 'app.ts'), 'export const status = "broken";\n');
         setTimeout(() => emitter.emit('event', { type: 'done', data: { exitCode: 0 } }), 5);
       };
@@ -589,7 +594,7 @@ try {
 
   assert(pipelineHaltedOnError, 'Pipeline halted when verifier attempted to mutate source or exited with error');
   const task16 = mutCoordinator.getTask(mutTaskId);
-  assert(task16?.status === 'ROLLED_BACK' || task16?.status === 'FAILED', 'Mutating verifier task was rolled back or failed');
+  assert(!task16 || task16.status === 'ROLLED_BACK' || task16.status === 'FAILED', 'Mutating verifier task was rolled back, failed, or removed from the live map');
   const mainContent16 = fs.readFileSync(path.join(repo16, 'app.ts'), 'utf8');
   assert(!mainContent16.includes('fixed'), 'Unverified candidate was NOT merged into destination repository');
 
@@ -612,7 +617,6 @@ setInterval(() => {}, 1000);
   const childPid = stubbornChild.pid!;
   assert(typeof childPid === 'number' && childPid > 0, 'Stubborn child process spawned');
 
-  // Wait until process has attached signal handlers and emitted READY
   await new Promise<void>((resolve) => {
     stubbornChild.stdout?.on('data', (chunk) => {
       if (chunk.toString().includes('READY')) resolve();
@@ -724,7 +728,6 @@ setInterval(() => {}, 1000);
   fs.writeFileSync(path.join(worktree19.worktreePath, 'feature.txt'), 'feature\n');
   const frozen19 = WorktreeManager.freezeCandidate(worktree19);
 
-  // Advance destination branch in main repo after freeze
   fs.writeFileSync(path.join(repo19, 'dest_advance.txt'), 'dest advance\n');
   execFileSync('git', ['add', 'dest_advance.txt'], { cwd: repo19 });
   execFileSync('git', ['commit', '-m', 'dest advance'], { cwd: repo19 });
@@ -742,12 +745,120 @@ setInterval(() => {}, 1000);
   assert(fs.existsSync(worktree19.worktreePath), 'Isolated worktree was retained on disk for recovery');
   WorktreeManager.cleanupWorktree(worktree19);
 
-  // Clean up test base dir
+  // --- TEST 20: Pending approval survives coordinator restart ---
+  console.log('\n20. Testing Pending Approval Persistence Across Restart...');
+  const repo20 = path.join(testBaseDir, 'repo20');
+  fs.mkdirSync(repo20, { recursive: true });
+  execFileSync('git', ['init', '-b', 'main'], { cwd: repo20 });
+  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo20 });
+  execFileSync('git', ['config', 'user.email', 'test@local'], { cwd: repo20 });
+  fs.writeFileSync(path.join(repo20, 'persist.txt'), 'base\n');
+  execFileSync('git', ['add', 'persist.txt'], { cwd: repo20 });
+  execFileSync('git', ['commit', '-m', 'init persist'], { cwd: repo20 });
+  RepositoryRegistry.register(repo20);
+
+  const persistFile = path.join(testBaseDir, 'omnidev-state.json');
+  const persistFactory: AdapterFactory = {
+    createPlanningAdapter: () => {
+      const emitter = new EventEmitter() as any;
+      emitter.execute = async () => {
+        setTimeout(() => emitter.emit('event', { type: 'done', data: { exitCode: 0 } }), 5);
+      };
+      emitter.abort = async () => {};
+      return emitter;
+    },
+    createCodingAdapter: () => {
+      const emitter = new EventEmitter() as any;
+      emitter.execute = async (opts: any) => {
+        fs.writeFileSync(path.join(opts.cwd, 'survived.ts'), 'export const ok = true;\n');
+        setTimeout(() => emitter.emit('event', { type: 'done', data: { exitCode: 0 } }), 5);
+      };
+      emitter.abort = async () => {};
+      return emitter;
+    }
+  };
+
+  const coordBefore = new AgenticPipelineCoordinator(persistFactory, { stateFile: persistFile });
+  let persistedSha = '';
+  const persistTaskId = `task_persist_${Date.now()}`;
+  await new Promise<void>((resolve) => {
+    coordBefore.on('approval_required', (data) => {
+      persistedSha = data.candidateCommit;
+      resolve();
+    });
+    coordBefore.runPipeline({
+      id: persistTaskId,
+      repoPath: repo20,
+      prompt: 'Persist candidate'
+    });
+  });
+  assert(persistedSha.length === 40, 'Candidate SHA frozen before simulated crash');
+  assert(fs.existsSync(persistFile), 'State file written for pending approval');
+
+  const coordAfter = new AgenticPipelineCoordinator(persistFactory, { stateFile: persistFile });
+  const restored = coordAfter.getPendingApprovals();
+  assert(restored.length === 1, 'Restarted coordinator restored one pending approval');
+  assert(restored[0].candidateCommit === persistedSha, 'Restored approval is bound to the original candidate SHA');
+  assert(restored[0].taskId === persistTaskId, 'Restored task id matches');
+
+  coordAfter.approveTask(persistTaskId, persistedSha, { allowUnverified: true });
+  assert(fs.existsSync(path.join(repo20, 'survived.ts')), 'Approve after restart merged the original candidate object');
+  assert(coordAfter.getPendingApprovals().length === 0, 'Merged task is no longer pending');
+  assert(!coordAfter.getTask(persistTaskId), 'Finished task was deleted from the in-memory map');
+
+  // --- TEST 21: Implicit cwd is not allowlisted ---
+  console.log('\n21. Testing Explicit Repository Registry (No Implicit cwd)...');
+  RepositoryRegistry.clear();
+  assert(!RepositoryRegistry.isAllowed(process.cwd()), 'process.cwd() is not implicitly allowlisted');
+  assert(!RepositoryRegistry.isAllowed(repo20), 'Cleared registry rejects a previously registered repo until re-added');
+  assert(RepositoryRegistry.register(repo20), 'Explicit register succeeds');
+  assert(RepositoryRegistry.isAllowed(repo20), 'Explicitly registered repo is allowed');
+
+  // --- TEST 22: Pairing session cookie, query token rejected ---
+  console.log('\n22. Testing Pairing Session (No Query-String Token)...');
+  const pairCoordinator = new AgenticPipelineCoordinator(persistFactory);
+  const pairToken = 'pairing_secret_token_abc_999';
+  const { server: pairServer, pairingCode } = createOmniDevServer({
+    token: pairToken,
+    coordinator: pairCoordinator
+  });
+  assert(typeof pairingCode === 'string' && pairingCode.length === 6, 'Daemon exposes a short pairing code');
+
+  const pairRes = await dispatchRequest(pairServer, {
+    method: 'POST',
+    url: '/api/session',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ pairingCode })
+  });
+  assert(pairRes.status === 200, 'Valid pairing code issues a session');
+  assert(Boolean(pairRes.headers['set-cookie'] && pairRes.headers['set-cookie'].includes('omnidev_session=')), 'Session cookie is HttpOnly via Set-Cookie');
+
+  const cookie = pairRes.headers['set-cookie'].split(';')[0];
+  const cookieFleet = await dispatchRequest(pairServer, {
+    url: '/api/fleet',
+    headers: { cookie }
+  });
+  assert(cookieFleet.status === 200, 'Session cookie authorizes /api/fleet');
+
+  const badQuery = await dispatchRequest(pairServer, {
+    url: `/api/fleet?token=${pairToken}`
+  });
+  assert(badQuery.status === 401, 'Long-lived token in the query string is not accepted');
+
+  const repoAdd = await dispatchRequest(pairServer, {
+    method: 'POST',
+    url: '/api/repos',
+    headers: { 'authorization': `Bearer ${pairToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ path: repo20 })
+  });
+  assert(repoAdd.status === 200, 'POST /api/repos registers an explicit path');
+  const added = JSON.parse(repoAdd.body);
+  assert(added.repositories.includes(fs.realpathSync(repo20)), 'Registered repo appears in the allowlist response');
+
   fs.rmSync(testBaseDir, { recursive: true, force: true });
 
   console.log(`\n🎉 Hardened Test Suite Completed: ${passed}/${total} assertions passed.\n`);
 
-  // Explicitly check that passed === total before exit
   if (passed === total && (!process.exitCode || process.exitCode === 0)) {
     process.exit(0);
   } else {

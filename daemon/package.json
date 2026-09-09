@@ -1,13 +1,14 @@
 {
   "name": "omnidev-daemon",
   "version": "1.0.0",
-  "description": "OmniDev Hub: Smart Multi-Agent Fleet Controller & Privacy Router",
+  "description": "OmniDev Hub: local merge/verify daemon for coding-agent worktrees",
   "type": "module",
   "main": "src/server.ts",
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
-    "test": "tsx ../tests/verify-engine.ts"
+    "test": "tsx ../tests/verify-engine.ts",
+    "cli": "tsx src/cli.ts"
   },
   "dependencies": {
     "ws": "^8.18.0"
