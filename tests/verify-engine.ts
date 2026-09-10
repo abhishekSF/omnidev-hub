@@ -6,7 +6,7 @@ import { HardwareProfiler } from '../daemon/src/fleet/hardware-profiler.js';
 import { KeepAwakeManager } from '../daemon/src/fleet/keepawake.js';
 import { PrivacyPolicyEngine } from '../daemon/src/compiler/policy.js';
 import { WorktreeManager, DestinationAdvancedException } from '../daemon/src/worktree/manager.js';
-import { AgenticPipelineCoordinator, AdapterFactory } from '../daemon/src/compiler/agentic-pipeline.js';
+import { AgenticPipelineCoordinator, AdapterFactory, commandToArgv } from '../daemon/src/compiler/agentic-pipeline.js';
 import { AntiGravityAdapter } from '../daemon/src/adapters/antigravity.js';
 import { terminateChildProcess } from '../daemon/src/adapters/process-killer.js';
 import { createOmniDevServer, validateToken, RepositoryRegistry } from '../daemon/src/server.js';
@@ -79,6 +79,8 @@ async function runTests() {
   const profile = HardwareProfiler.getProfile();
   assert(typeof profile.hostname === 'string' && profile.hostname.length > 0, 'Hostname identified');
   assert(profile.cpuCores > 0, `CPU cores detected: ${profile.cpuCores} cores`);
+  assert(typeof profile.powerState.isOnBattery === 'boolean', 'Power state exposes isOnBattery');
+  assert(typeof profile.powerState.isLidClosed === 'boolean', 'Power state exposes lid state');
 
   const testTaskId = `valid_task_${Date.now()}`;
   const lease = KeepAwakeManager.acquireLease(testTaskId, 'Testing timer cleanup', 10);
@@ -390,10 +392,12 @@ async function runTests() {
   }
 
   if (fs.existsSync(symlinkPath)) {
-    assert(RepositoryRegistry.isAllowed(insideRoot), 'Allowed root passes allowlist');
     assert(!RepositoryRegistry.isAllowed(symlinkPath), 'Symlink pointing outside allowed root is BLOCKED by realpath validation');
-    assert(!RepositoryRegistry.isAllowed(outsideDir), 'Raw outside directory is BLOCKED');
   }
+  assert(RepositoryRegistry.isAllowed(insideRoot), 'Allowed root passes allowlist');
+  assert(!RepositoryRegistry.isAllowed(outsideDir), 'Raw outside directory is BLOCKED');
+  const traversal = path.join(insideRoot, '..', path.basename(outsideDir));
+  assert(!RepositoryRegistry.isAllowed(traversal), 'Relative traversal out of allowed root is BLOCKED by realpath');
 
   // --- TEST 15: Clean Server Lifecycle & Authenticated End-to-End Delivery ---
   console.log('\n15. Testing Clean Server Lifecycle & Authenticated Delivery...');
@@ -854,6 +858,75 @@ setInterval(() => {}, 1000);
   assert(repoAdd.status === 200, 'POST /api/repos registers an explicit path');
   const added = JSON.parse(repoAdd.body);
   assert(added.repositories.includes(fs.realpathSync(repo20)), 'Registered repo appears in the allowlist response');
+
+  // --- TEST 23: Unauthenticated PWA assets & JSON body cap ---
+  console.log('\n23. Testing PWA Static Allowlist & JSON Body Limit...');
+  const indexRes = await dispatchRequest(testServer, { url: '/' });
+  assert(indexRes.status === 200, 'PWA index is served without a session');
+  assert(indexRes.body.includes('OmniDev'), 'PWA index HTML is returned');
+
+  const appJsRes = await dispatchRequest(testServer, { url: '/app.js' });
+  assert(appJsRes.status === 200, 'PWA app.js is served without a session');
+  assert(appJsRes.body.includes('initWebSocket'), 'app.js body is the control-surface script');
+
+  const manifestRes = await dispatchRequest(testServer, { url: '/manifest.json' });
+  assert(manifestRes.status === 200, 'PWA manifest is served without a session');
+  assert(manifestRes.body.includes('OmniDev Hub'), 'manifest.json names the app');
+
+  const sneak = await dispatchRequest(testServer, { url: '/../daemon/package.json' });
+  assert(sneak.status === 401, 'Non-allowlisted path is not served as a static file');
+
+  const oversized = await dispatchRequest(testServer, {
+    method: 'POST',
+    url: '/api/session',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ pairingCode: 'x'.repeat(70_000) })
+  });
+  assert(oversized.status === 413, 'JSON bodies over 64KiB are rejected');
+
+  // --- TEST 24: Argv-array designated verifier ---
+  console.log('\n24. Testing Argv-Array Designated Verifier...');
+  assert(commandToArgv(['npm', 'test', '--', '--runInBand']).join(' ') === 'npm test -- --runInBand', 'argv array is passed through intact');
+  assert(commandToArgv('node -e process.exit(0)').join(' ') === 'node -e process.exit(0)', 'string commands still split on spaces');
+  assert(commandToArgv('').length === 0, 'empty string yields empty argv');
+  assert(commandToArgv([]).length === 0, 'empty array yields empty argv');
+
+  const repo24 = path.join(testBaseDir, 'repo24');
+  fs.mkdirSync(repo24, { recursive: true });
+  execFileSync('git', ['init', '-b', 'main'], { cwd: repo24 });
+  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo24 });
+  execFileSync('git', ['config', 'user.email', 'test@local'], { cwd: repo24 });
+  fs.writeFileSync(path.join(repo24, 'ok.txt'), 'base\n');
+  const omni24 = path.join(repo24, '.omnidev');
+  fs.mkdirSync(omni24, { recursive: true });
+  fs.writeFileSync(
+    path.join(omni24, 'config.json'),
+    JSON.stringify({ verification: { command: ['node', '-e', 'process.exit(0)'] } })
+  );
+  execFileSync('git', ['add', '.'], { cwd: repo24 });
+  execFileSync('git', ['commit', '-m', 'init argv verifier'], { cwd: repo24 });
+  RepositoryRegistry.register(repo24);
+
+  const argvCoordinator = new AgenticPipelineCoordinator(persistFactory);
+  let argvVerification: any = null;
+  const argvTaskId = `task_argv_${Date.now()}`;
+  await new Promise<void>((resolve) => {
+    argvCoordinator.on('approval_required', (data) => {
+      argvVerification = data.verification;
+      resolve();
+    });
+    argvCoordinator.on('error', (err) => {
+      argvVerification = { error: err };
+      resolve();
+    });
+    argvCoordinator.runPipeline({
+      id: argvTaskId,
+      repoPath: repo24,
+      prompt: 'Argv verifier'
+    });
+  });
+  assert(argvVerification?.status === 'VERIFIED', 'Argv-array designated command is executed and marked VERIFIED');
+  assert(argvVerification?.command === 'node -e process.exit(0)', 'Verification evidence records the argv command label');
 
   fs.rmSync(testBaseDir, { recursive: true, force: true });
 

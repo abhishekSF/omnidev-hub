@@ -30,6 +30,8 @@ Three things to lock:
 
 The merge/verify path is the product. Do not add more engines until a human can run one real task from the phone, restart the daemon, and still approve the same SHA.
 
+Slice 1 (survivable loop) and the README-honesty parts of Slice 2 are in `main` as of `#1`. This follow-up is Slice 3 hygiene only. Still skip multi-machine fleet, extra providers, service worker, pretty diffs.
+
 ### Slice 1 — Make the loop survivable
 
 1. Persist task state (`id`, repo, branch, base SHA, candidate SHA, verification, status). On boot, rehydrate pending approvals and do not delete worktrees that still have a candidate.
@@ -49,6 +51,18 @@ Engine probe / grey-out missing chips. Linux `systemd-inhibit`. License, CI, hon
 Argv arrays for verify commands. Replace the custom runner later. Inject singletons. Bound CORS.
 
 Skip for now: multi-machine fleet, more providers, service worker, pretty diff viewer, thermal ML.
+
+### Slice 3 status (9 Sep 2026)
+
+Landed after `#1`:
+
+- PWA files are an exact basename allowlist (`/`, `/index.html`, `/app.js`, `/manifest.json`). The raw URL path is never `path.join`'d into the filesystem.
+- JSON bodies capped at 64KiB (413). WebSocket inbound `maxPayload` is 256KiB. Outbound diffs are unaffected.
+- Linux battery/lid via sysfs/ACPI so the backpack interlock can fire on Linux hosts that expose those nodes.
+- `commandToArgv` is exported and empty commands are `UNVERIFIED`, not a spawn of `undefined`.
+- Tests 23–24 cover static allowlisting, the body cap, and argv-array designated verification.
+
+Still skip: multi-machine fleet, more providers, service worker, pretty diff viewer, thermal ML.
 
 ---
 
@@ -88,3 +102,5 @@ Steal Herdr’s persistence, Paseo/T3 pairing, Zuse’s handoff later. Do not ou
 ## 5. Implementation note
 
 Slice 1 of this plan is implemented in this repository: persisted pending approvals, explicit repo registry, pairing/Bearer auth (no `?token=`), escaped repo dropdown, voice-fills-only, finished-task cleanup, Linux keep-awake, MIT license, and CI.
+
+Slice 3 hygiene (PWA basename allowlist, payload caps, Linux sysfs power/lid, argv-array verifier tests) is documented in [portfolio-overlaps.md](./portfolio-overlaps.md) for cross-repo reuse opportunities. Nothing was extracted into a shared package.

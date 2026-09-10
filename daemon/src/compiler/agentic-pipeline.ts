@@ -639,6 +639,19 @@ export class AgenticPipelineCoordinator extends EventEmitter {
     }
 
     const argv = commandToArgv(designatedCommand);
+    if (argv.length === 0) {
+      return {
+        status: 'UNVERIFIED',
+        passed: false,
+        isDesignatedCheck: false,
+        stdout: diffCheckStdout,
+        message: 'UNVERIFIED: Designated verification command was empty. Code verification was NOT performed.',
+        verifiedCommit: candidateCommit,
+        baseCommit,
+        durationMs: Date.now() - startTime,
+        checkedAt: new Date().toISOString()
+      };
+    }
     const commandLabel = argv.join(' ');
 
     // 3. Designated command exists: Protect tracked files before running verifier!
@@ -727,7 +740,7 @@ export class AgenticPipelineCoordinator extends EventEmitter {
   }
 }
 
-function commandToArgv(command: string | string[]): string[] {
+export function commandToArgv(command: string | string[]): string[] {
   if (Array.isArray(command)) {
     return command.map((part) => String(part)).filter((s) => s.length > 0);
   }

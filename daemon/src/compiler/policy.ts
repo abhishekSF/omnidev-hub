@@ -36,7 +36,12 @@ export class PrivacyPolicyEngine {
   ];
 
   public static evaluateRepository(rawRepoPath: string): RepositoryPrivacyReport {
-    const repoPath = path.resolve(rawRepoPath);
+    let repoPath = path.resolve(rawRepoPath);
+    try {
+      repoPath = fs.realpathSync(repoPath);
+    } catch {
+      // Keep the resolved path if realpath fails (missing or dangling)
+    }
     const reasons: string[] = [];
     let hasSecrets = false;
 
@@ -56,6 +61,7 @@ export class PrivacyPolicyEngine {
       const gitRemote = execFileSync('git', ['remote', '-v'], {
         cwd: repoPath,
         encoding: 'utf8',
+        timeout: 5000,
         stdio: ['ignore', 'pipe', 'ignore']
       });
 

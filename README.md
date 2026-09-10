@@ -88,6 +88,7 @@ omnidev-hub/
 │       ├── worktree/     # Isolate / freeze / merge
 │       └── server.ts
 ├── pwa/                  # Phone control surface
+├── docs/                 # Conversation notes, portfolio overlaps (no extra product claims)
 └── tests/verify-engine.ts
 ```
 
@@ -99,7 +100,7 @@ Bounded leases while a task is active:
 - Linux: `systemd-inhibit`
 - Windows: `SetThreadExecutionState`
 
-Lid-closed + battery refuses a new lease. That is not a firmware override of sleep or thermal policy.
+Lid-closed + battery refuses a new lease. On Linux, battery status comes from `/sys/class/power_supply` and lid state from `/proc/acpi/button/lid` when those nodes exist. That is not a firmware override of sleep or thermal policy.
 
 ## License
 
